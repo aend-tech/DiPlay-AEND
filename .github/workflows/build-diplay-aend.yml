@@ -1,0 +1,81 @@
+name: AE&D DiPlay — Self-hosted Android Debug Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git commit or branch to compile (default: upstream v0.2.20)"
+        type: string
+        required: true
+        default: "3c95c936859e8a9153f0040caf2337adddb9e3e4"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diplay-aend-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  debug-apk:
+    name: DiPlay source-only debug APK
+    runs-on:
+      group: aend build servers
+      labels: [self-hosted, Linux, X64, android]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout requested source revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Reject credentials in public source
+        run: python3 scripts/check_public_tree.py
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Android SDK 37 and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Record revision and build environment
+        run: |
+          mkdir -p build-evidence
+          {
+            echo "requested_ref=${{ inputs.source_ref }}"
+            echo "resolved_commit=$(git rev-parse HEAD)"
+            echo "workflow_run=${{ github.run_id }}"
+            echo "runner_name=${{ runner.name }}"
+            echo "runner_os=${{ runner.os }}"
+            echo "runner_arch=${{ runner.arch }}"
+            java -version 2>&1
+            ./gradlew --version
+          } | tee build-evidence/environment.txt
+
+      - name: Build DiPlay debug APK
+        run: ./gradlew :mobile:assembleDebug --no-daemon --max-workers=2 --stacktrace
+
+      - name: Generate APK checksum
+        run: |
+          sha256sum mobile/build/outputs/apk/debug/mobile-debug.apk > build-evidence/mobile-debug.apk.sha256
+
+      - name: Upload APK and build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiPlay-AEND-source-debug-${{ github.run_number }}
+          path: |
+            mobile/build/outputs/apk/debug/mobile-debug.apk
+            build-evidence/environment.txt
+            build-evidence/mobile-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
